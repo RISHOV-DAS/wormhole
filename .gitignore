@@ -1,0 +1,26 @@
+# Node.js
+node_modules/
+npm-debug.log
+yarn-error.log
+.env
+
+# Rust
+target/
+**/*.rs.bk
+
+# OS specific
+.DS_Store
+Thumbs.db
+
+# Project specific (Test directories)
+test_send/
+test_receive/
+test_resume_send/
+test_resume_recv/
+test_resume_send_v2/
+test_resume_recv_v2/
+shell_test_send/
+shell_test_recv/
+
+# Temporary transfer files
+.wormhole_transfer.tar.part
