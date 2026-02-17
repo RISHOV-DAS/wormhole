@@ -3,17 +3,28 @@ import path from 'path'
 import { createSwarm, joinSwarm } from './networking.js'
 import { hashRoomKey } from './crypto.js'
 import { ResumableSender, ResumableReceiver } from './transfer.js'
-import cliProgress from 'cli-progress'
 
-export async function startShell() {
+import { Protocol } from './protocol.js'
+
+export async function startShell(initialRoom = null, initialNick = 'Anonymous') {
     console.log('Welcome to Wormhole P2P Shell')
-    console.log('Commands: /host <room>, /nick <name>, /chat <msg>, /send <file>, /receive <out>, /quit')
+    console.log('Commands: /host <room>, /join <room>, /nick <name>, /chat <msg> or just type your message, /send <file>, /receive <out>, /quit')
 
     const state = {
-        swarm: null,
+        chatSwarm: null,
+        fileSwarm: null,
         room: null,
-        topicHex: null,
-        nick: 'Anonymous'
+        chatTopicHex: null,
+        fileTopicHex: null,
+        nick: initialNick,
+        protocol: null,
+        keyPair: null
+    }
+
+    state.protocol = new Protocol(state)
+
+    if (initialRoom) {
+        await handleHost(state, initialRoom)
     }
 
     process.stdin.on('data', async (data) => {
@@ -28,7 +39,8 @@ export async function startShell() {
             switch (cmd) {
                 case '/quit':
                 case '/exit':
-                    if (state.swarm) await state.swarm.destroy()
+                    if (state.chatSwarm) await state.chatSwarm.destroy()
+                    if (state.fileSwarm) await state.fileSwarm.destroy()
                     process.exit(0)
                     break
 
@@ -48,7 +60,7 @@ export async function startShell() {
                     break
 
                 case '/chat':
-                    if (!state.swarm) {
+                    if (!state.chatSwarm) {
                         console.log('Error: You must join a room first using /host')
                         break
                     }
@@ -75,8 +87,7 @@ export async function startShell() {
                     console.log(`Unknown command: ${cmd}`)
             }
         } else {
-            // Default to chat if in a room
-            if (state.swarm) {
+            if (state.chatSwarm) {
                 await broadcastChat(state, line)
             } else {
                 console.log('Not connected. Use /host <room> to join a room.')
@@ -86,43 +97,63 @@ export async function startShell() {
 }
 
 async function handleHost(state, roomName) {
-    if (state.swarm) {
+    if (state.chatSwarm) {
         console.log('Leaving current room...')
-        await state.swarm.destroy()
+        await state.chatSwarm.destroy()
+        await state.fileSwarm.destroy()
     }
 
     state.room = roomName
-    const topic = hashRoomKey(roomName)
-    state.topicHex = topic.toString('hex')
+
+    // Derived topics
+    const chatTopic = hashRoomKey(roomName)
+    const fileTopic = hashRoomKey(roomName + '-files')
+
+    state.chatTopicHex = chatTopic.toString('hex')
+    state.fileTopicHex = fileTopic.toString('hex')
 
     console.log(`Hashing room '${roomName}'...`)
-    console.log(`Room Key (Topic): ${state.topicHex}`)
-    console.log('Joining swarm...')
+    console.log(`Chat Key: ${state.chatTopicHex}`)
+    console.log('Joining swarms...')
 
-    state.swarm = createSwarm()
-    setupSwarmListeners(state)
-    await joinSwarm(state.swarm, topic)
+    try {
+        // Create swarms with same identity
+        // Create chat swarm first, let it generate a keyPair
+        state.chatSwarm = createSwarm()
+        console.log('Chat swarm created.')
+
+        // Reuse that identity for file swarm
+        if (!state.chatSwarm.keyPair) {
+            console.error('Error: chatSwarm.keyPair is undefined!')
+        }
+        state.keyPair = state.chatSwarm.keyPair
+        console.log('KeyPair retrieved:', state.keyPair ? 'Yes' : 'No')
+
+        state.fileSwarm = createSwarm({ keyPair: state.keyPair })
+        console.log('File swarm created.')
+
+        setupChatListeners(state)
+
+        // Default handler for file swarm to prevent crashes on unhandled socket errors
+        state.fileSwarm.on('connection', (conn) => {
+            conn.on('error', () => { })
+        })
+
+    } catch (err) {
+        console.error('Error in handleHost:', err)
+        process.exit(1)
+    }
+
+    await joinSwarm(state.chatSwarm, chatTopic)
+    await joinSwarm(state.fileSwarm, fileTopic)
+
     console.log(`Joined room: ${roomName}`)
+    console.log(`Ready to chat and transfer files.`)
 }
 
-function setupSwarmListeners(state) {
-    state.swarm.on('connection', (conn, info) => {
-        const peerId = info.publicKey.toString('hex').slice(0, 8)
-        console.log(`\n[System] Peer ${peerId} connected.`)
-
-        conn.on('data', (data) => {
-            try {
-                const msg = JSON.parse(data.toString())
-                if (msg.type === 'CHAT') {
-                    const time = new Date(msg.timestamp).toLocaleTimeString()
-                    console.log(`[${time}] <${msg.nick}> ${msg.text}`)
-                }
-            } catch (err) { }
-        })
-
-        conn.on('error', () => {
-            console.log(`\n[System] Peer ${peerId} disconnected.`)
-        })
+function setupChatListeners(state) {
+    state.chatSwarm.on('connection', (conn, info) => {
+        state.protocol.onConnection(conn, info)
     })
 }
 
@@ -140,13 +171,13 @@ async function broadcastChat(state, text) {
     const time = new Date(msg.timestamp).toLocaleTimeString()
     console.log(`[${time}] <${state.nick}> ${text}`)
 
-    for (const conn of state.swarm.connections) {
+    for (const conn of state.chatSwarm.connections) {
         conn.write(payload)
     }
 }
 
 async function handleSend(state, filePath) {
-    if (!state.swarm) {
+    if (!state.fileSwarm) {
         console.log('Error: Join a room first.')
         return
     }
@@ -158,43 +189,25 @@ async function handleSend(state, filePath) {
     }
 
     console.log(`[Sender] Initiating transfer for: ${filePath}`)
-    console.log(`[Sender] Waiting for ready peer...`)
+    console.log(`[Sender] Waiting for ready peer on File Swarm...`)
 
     const sender = new ResumableSender(absPath)
 
-    // We reuse the existing swarm connections
-    // But ResumableSender.connect() expects a SINGLE socket (conn).
-    // In a multi-peer swarm, sending to ALL might be chaotic or intended.
-    // For now, let's send to ALL connected peers who handshake.
-
-    // NOTE: This blocks the CLI loop slightly during setup, but the streams are async.
-    // We need to hook up the 'connection' event OR iterate existing connections.
-
-    // Iterating existing connections:
-    for (const conn of state.swarm.connections) {
+    // Send to all connected file peers
+    for (const conn of state.fileSwarm.connections) {
         setupSenderOnConnection(sender, conn)
     }
 
-    // Hook for future connections (until some stop condition?)
-    // For this simple shell, we'll keep sending to anyone new who joins while we stay in "shell mode".
-    // But typically user wants "/send" to happen once. 
-    // Let's attach a temporary listener.
-
     const onConn = (conn) => setupSenderOnConnection(sender, conn)
-    state.swarm.on('connection', onConn)
+    state.fileSwarm.on('connection', onConn)
 
-    console.log('[Sender] Transfer mode active. Press Ctrl+C or type command to stop (not implemented deeply).')
+    // Cleanup listener eventually? For shell, we leave it open or user quits.
+    // Ideally we track active transfers.
 }
 
 function setupSenderOnConnection(sender, conn) {
     sender.connect(conn).catch(err => {
         // console.log('Handshake failed or not a receiver:', err.message)
-    })
-
-    // Progress bar shared? It's tricky with multiple peers. 
-    // We will use simple logs for the shell version to avoid messing up chat UI.
-    sender.on('progress', (bytes) => {
-        // process.stdout.write('.') // minimal feedback
     })
     sender.on('finished', () => {
         console.log('\n[Sender] Transfer finished for a peer.')
@@ -202,7 +215,7 @@ function setupSenderOnConnection(sender, conn) {
 }
 
 async function handleReceive(state, outputDir) {
-    if (!state.swarm) {
+    if (!state.fileSwarm) {
         console.log('Error: Join a room first.')
         return
     }
@@ -215,12 +228,12 @@ async function handleReceive(state, outputDir) {
 
     const receiver = new ResumableReceiver(absPath)
 
-    for (const conn of state.swarm.connections) {
+    for (const conn of state.fileSwarm.connections) {
         setupReceiverOnConnection(receiver, conn)
     }
 
     const onConn = (conn) => setupReceiverOnConnection(receiver, conn)
-    state.swarm.on('connection', onConn)
+    state.fileSwarm.on('connection', onConn)
 }
 
 function setupReceiverOnConnection(receiver, conn) {

@@ -19,8 +19,8 @@ export function run() {
         })
 
     program.command('send')
-        .description('Send a folder to peers in the room')
-        .argument('<folder>', 'Folder path to send')
+        .description('Send a file or folder to peers in the room')
+        .argument('<folder>', 'Folder/File path to send')
         .requiredOption('-r, --room <secret>', 'Secret room key')
         .action(async (folderPath, options) => {
             const absPath = path.resolve(process.cwd(), folderPath)
@@ -37,10 +37,11 @@ export function run() {
 
             const bar = new cliProgress.SingleBar({}, cliProgress.Presets.shades_classic)
             let progressBarStarted = false
+            const folderSize = await sender.getFolderSize(absPath)
 
             sender.on('progress', (bytes) => {
                 if (!progressBarStarted) {
-                    bar.start(100, 0, { speed: "N/A" }) // Total unknown for tar stream easily without prescan
+                    bar.start(folderSize, 0, { speed: "N/A" }) // Total unknown for tar stream easily without prescan
                     progressBarStarted = true
                 }
                 bar.increment(bytes)
@@ -53,12 +54,12 @@ export function run() {
             })
 
             sender.on('error', (err) => {
-                // console.error('\n[Sender] Stream error:', err.message)
-                // Don't exit, wait for reconnect
+                console.error('\n[Sender] Stream error:', err.message)
+                //Don't exit, wait for reconnect
             })
 
             sender.on('close', () => {
-                // Socket closed, wait for next connection
+                //Socket closed, wait for next connection
             })
 
             swarm.on('connection', async (conn, info) => {
@@ -94,7 +95,7 @@ export function run() {
 
             receiver.on('progress', (chunkSize, totalReceived) => {
                 if (!progressBarStarted) {
-                    bar.start(100, 0) // We don't know total unless handshake implies it, but we didn't implement total size msg
+                    bar.start(0, 0) // We don't know total unless handshake implies it, but we didn't implement total size msg
                     progressBarStarted = true
                 }
                 bar.update(totalReceived)
@@ -123,7 +124,7 @@ export function run() {
         .requiredOption('-r, --room <secret>', 'Secret room key')
         .requiredOption('-n, --nick <name>', 'Nickname')
         .action(async (options) => {
-            await startChat(options.room, options.nick)
+            await startShell(options.room, options.nick)
         })
 
     program.parse()
