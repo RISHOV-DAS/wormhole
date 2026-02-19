@@ -1,8 +1,8 @@
 import Hyperswarm from 'hyperswarm'
 import crypto from 'crypto'
 
-export function createSwarm(opts = {}) {
-    const swarm = new Hyperswarm(opts)
+export function createSwarm() {
+    const swarm = new Hyperswarm()
 
     swarm.on('connection', (conn, info) => {
         // keeping the connection alive

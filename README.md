@@ -18,10 +18,12 @@ Wormhole is a terminal-based Peer-to-Peer (P2P) application for anonymous secure
 This is a hybrid project containing:
 
 -   `client/`: The main Node.js CLI application (uses Hyperswarm).
+-   `rendezvous/`: A Rust implementation of a Rendezvous Discovery Server (uses `libp2p`, optional/standalone).
 
 ## Prerequisites
 
 -   **Node.js**: v18 or higher.
+-   **Rust**: (Optional) Only if you want to run the rendezvous server code.
 
 ## Installation
 
@@ -41,6 +43,18 @@ This is a hybrid project containing:
     ```
     *This allows you to run `wormhole` from anywhere.*
 
+### Server (Rust) - *Optional*
+
+The current client uses Hyperswarm and **does not require this server**. This server is provided as an alternative `libp2p` implementation reference.
+
+1.  Navigate to the rendezvous directory:
+    ```bash
+    cd rendezvous
+    ```
+2.  Run the server:
+    ```bash
+    cargo run
+    ```
 
 ## Usage
 
@@ -87,44 +101,16 @@ Once inside the shell, you can use the following commands:
 
 ## Architecture Details
 
-### Dual Swarm Topology
-To ensures simultaneous, non-blocking operations, the client maintains two separate P2P swarms for every room:
-1.  **Chat Swarm** (`hash(room_name)`):
-    -   Dedicated to JSON-based control messages (Chat, Status, Etc).
-    -   Managed by `Protocol` class.
-    -   Always active for real-time communication.
-2.  **File Swarm** (`hash(room_name + '-files')`):
-    -   Dedicated to binary data transfer.
-    -   Ephemeral or persistent connections used solely for streaming `tar` data.
-    -   Clean stream ensures no handshake corruption.
-
-Both swarms share the same **Cryptographic Identity** (Key Pair), so a user appears as a single peer entity across both networks.
-
-### Protocol
--   **Chat**: JSON messages `{ type: 'CHAT', text: '...', nick: '...', timestamp: N }`.
--   **Transfer**:
-    -   **Handshake**: Receiver sends `{ type: 'HANDSHAKE', receivedBytes: N }` to indicate where to resume.
-    -   **Stream**: Sender streams `tar-fs` pack data starting from offset `N`.
-
-## Codebase Overview
-
--   **`bin/wormhole.js`**: Entry point. Bootstraps the CLI.
--   **`src/cli.js`**: Handles command-line argument parsing (Commander.js). Defines `send`, `receive`, and `chat` commands.
--   **`src/shell.js`**: The core application logic.
-    -   Manages the interactive REPL.
-    -   Maintains `chatSwarm` and `fileSwarm` state.
-    -   Routes commands to appropriate handlers.
--   **`src/protocol.js`**:
-    -   `Protocol` class that wraps the Chat Swarm connections.
-    -   Parses incoming JSON and dispatches events (e.g., displaying chat messages).
--   **`src/transfer.js`**:
-    -   `ResumableSender`: Handles reading files/folders, packing them into a `tar` stream, and skipping bytes for resumption.
-    -   `ResumableReceiver`: Handles the handshake and unpacking the `tar` stream to disk.
--   **`src/networking.js`**: Helper wrapper around `hyperswarm` for creating and joining topics.
--   **`src/crypto.js`**: Utilities for hashing room keys.
+-   **Discovery**: Uses `Hyperswarm` to find peers via a common topic (SHA-256 hash of the room name).
+-   **Transport**: Encrypted P2P connections (Noise protocol).
+-   **Data Transfer**:
+    -   Sender packs directory using `tar-fs`.
+    -   Data is piped to the socket.
+    -   Receiver writes to a partial file `.wormhole_transfer.tar.part`.
+    -   On reconnection, Receiver sends `{ type: 'HANDSHAKE', receivedBytes: N }`.
+    -   Sender skips `N` bytes and resumes streaming.
 
 ## Troubleshooting
 
--   **Connection Dropped**: The shell will keep the swarm alive. Just re-issue the `/send` or `/receive` command if the logic doesn't auto-resume for your specific case.
+-   **Connection Dropped**: The shell will keep the swarm alive. Just re-issue the `/send` or `/receive` command if the logic doesn't auto-resume for your specific case, or wait for the automatic retry loop if active.
 -   **Firewalls**: Hyperswarm uses UDP hole punching. Most NATs are supported, but aggressive corporate firewalls might block DHT traffic.
-

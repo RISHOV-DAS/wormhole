@@ -1,6 +1,7 @@
 import fs from 'fs'
 import path from 'path'
 import tar from 'tar-fs'
+import pump from 'pump'
 import { EventEmitter } from 'events'
 
 // wait for a handshake JSON message
@@ -27,26 +28,6 @@ export class ResumableSender extends EventEmitter {
         super()
         this.folderPath = folderPath
     }
-    async getFolderSize(folderPath) {
-        const stats = await fs.promises.stat(folderPath)
-        if (!stats.isDirectory()) {
-            return stats.size
-        }
-
-        let total = 0
-        const entries = fs.readdirSync(folderPath, { withFileTypes: true })
-
-        for (const entry of entries) {
-            const fullPath = path.join(folderPath, entry.name)
-            if (entry.isDirectory()) {
-                total += await this.getFolderSize(fullPath)
-            } else {
-                total += fs.statSync(fullPath).size
-            }
-        }
-
-        return total
-    }
 
     async connect(socket) {
         // 1. Wait for handshake to know where to start
@@ -55,18 +36,14 @@ export class ResumableSender extends EventEmitter {
         const startOffset = handshake.receivedBytes || 0
         console.log(`[Sender] Resuming from ${startOffset} bytes`)
 
-        let packOpts = {}
-        let packDir = this.folderPath
+        // 2. Create tar stream
+        // Note: tar-fs doesn't support 'start' offset natively on the pack stream easily 
+        // because it generates headers on the fly.
+        // We have to consume and discard bytes.
+        const packer = tar.pack(this.folderPath)
 
-        const stats = await fs.promises.stat(this.folderPath)
-        if (!stats.isDirectory()) {
-            packDir = path.dirname(this.folderPath)
-            packOpts = {
-                entries: [path.basename(this.folderPath)]
-            }
-        }
-
-        const packer = tar.pack(packDir, packOpts)
+        // We need to track total size for progress if possible, but tar-fs doesn't know total size ahead of time easily
+        // without a pre-pass. For now, we'll just stream and track transferred.
 
         let bytesSkipped = 0
 
@@ -106,7 +83,8 @@ export class ResumableSender extends EventEmitter {
 export class ResumableReceiver extends EventEmitter {
     constructor(outputDir) {
         super()
-        this.outputDir = outputDir || "./Downloads"
+        this.outputDir = outputDir
+        // Ensure outputDir exists so we can store the part file
         if (!fs.existsSync(outputDir)) {
             fs.mkdirSync(outputDir, { recursive: true })
         }
@@ -123,7 +101,7 @@ export class ResumableReceiver extends EventEmitter {
         }
 
         // 2. Send Handshake
-        const handshake = JSON.stringify({ type: 'HANDSHAKE', receivedBytes: this.receivedBytes, folderSize: this.folderSize })
+        const handshake = JSON.stringify({ type: 'HANDSHAKE', receivedBytes: this.receivedBytes })
         socket.write(handshake)
         console.log(`[Receiver] Sent handshake. Resuming from ${this.receivedBytes} bytes.`)
 
@@ -153,7 +131,7 @@ export class ResumableReceiver extends EventEmitter {
         const extractor = tar.extract(this.outputDir)
         fs.createReadStream(this.tempFile).pipe(extractor).on('finish', () => {
             console.log('[Receiver] Extraction complete.')
-            fs.unlinkSync(this.tempFile)
+            fs.unlinkSync(this.tempFile) // Cleanup
         })
     }
 }
