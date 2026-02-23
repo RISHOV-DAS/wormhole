@@ -3,6 +3,7 @@ import path from 'path'
 import tar from 'tar-fs'
 import pump from 'pump'
 import { EventEmitter } from 'events'
+import { label, successText, errorText, dimText, infoText } from './ui.js'
 
 // wait for a handshake JSON message
 function waitForHandshake(socket) {
@@ -31,16 +32,28 @@ export class ResumableSender extends EventEmitter {
 
     async connect(socket) {
         // 1. Wait for handshake to know where to start
-        console.log('[Sender] Waiting for handshake...')
+        console.log(`  ${label.sender} ${dimText('Waiting for handshake...')}`)
         const handshake = await waitForHandshake(socket)
         const startOffset = handshake.receivedBytes || 0
-        console.log(`[Sender] Resuming from ${startOffset} bytes`)
+        console.log(`  ${label.sender} ${infoText(`Resuming from ${startOffset} bytes`)}`)
 
         // 2. Create tar stream
         // Note: tar-fs doesn't support 'start' offset natively on the pack stream easily 
         // because it generates headers on the fly.
         // We have to consume and discard bytes.
-        const packer = tar.pack(this.folderPath)
+        let packer
+        const stat = fs.statSync(this.folderPath)
+
+        // Fix for EISDIR error when sending single files:
+        // tar-fs.pack(file) behaves unexpectedly. We must pack the parent dir
+        // and include only the file as an entry.
+        if (stat.isFile()) {
+            packer = tar.pack(path.dirname(this.folderPath), {
+                entries: [path.basename(this.folderPath)]
+            })
+        } else {
+            packer = tar.pack(this.folderPath)
+        }
 
         // We need to track total size for progress if possible, but tar-fs doesn't know total size ahead of time easily
         // without a pre-pass. For now, we'll just stream and track transferred.
@@ -103,7 +116,7 @@ export class ResumableReceiver extends EventEmitter {
         // 2. Send Handshake
         const handshake = JSON.stringify({ type: 'HANDSHAKE', receivedBytes: this.receivedBytes })
         socket.write(handshake)
-        console.log(`[Receiver] Sent handshake. Resuming from ${this.receivedBytes} bytes.`)
+        console.log(`  ${label.receiver} ${dimText('Sent handshake.')} ${infoText(`Resuming from ${this.receivedBytes} bytes.`)}`)
 
         // 3. Append to file
         const fileStream = fs.createWriteStream(this.tempFile, { flags: 'a' })
@@ -117,7 +130,6 @@ export class ResumableReceiver extends EventEmitter {
         socket.on('end', () => {
             fileStream.end()
             this.extract()
-            this.emit('finished')
         })
 
         socket.on('error', (err) => {
@@ -127,11 +139,26 @@ export class ResumableReceiver extends EventEmitter {
     }
 
     extract() {
-        console.log('[Receiver] Transfer complete. Extracting...')
+        console.log(`  ${label.receiver} ${infoText('Transfer complete. Extracting...')} 📦`)
         const extractor = tar.extract(this.outputDir)
-        fs.createReadStream(this.tempFile).pipe(extractor).on('finish', () => {
-            console.log('[Receiver] Extraction complete.')
-            fs.unlinkSync(this.tempFile) // Cleanup
+        const readStream = fs.createReadStream(this.tempFile)
+
+        readStream.on('error', (err) => {
+            console.error(`  ${label.receiver} ${errorText('Read error during extraction:')} ${err.message}`)
+            this.emit('error', err)
+        })
+
+        extractor.on('error', (err) => {
+            console.error(`  ${label.receiver} ${errorText('Extraction error:')} ${err.message}`)
+            this.emit('error', err)
+        })
+
+        readStream.pipe(extractor).on('finish', () => {
+            console.log(`  ${label.receiver} ${successText('Extraction complete.')} ✅`)
+            try {
+                fs.unlinkSync(this.tempFile) // Cleanup
+            } catch (e) { /* ignore cleanup errors */ }
+            this.emit('finished')
         })
     }
 }

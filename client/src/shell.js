@@ -4,16 +4,24 @@ import { createSwarm, joinSwarm } from './networking.js'
 import { hashRoomKey } from './crypto.js'
 import { ResumableSender, ResumableReceiver } from './transfer.js'
 import cliProgress from 'cli-progress'
+import {
+    banner, showHelp, label, colorNick, styledTime, styledRoom,
+    styledTopic, styledPath, styledCommand, errorText, successText,
+    dimText, infoText, divider, chalk
+} from './ui.js'
 
 export async function startShell() {
-    console.log('Welcome to Wormhole P2P Shell')
-    console.log('Commands: /host <room>, /nick <name>, /chat <msg>, /send <file>, /receive <out>, /quit')
+    banner()
+    showHelp()
 
     const state = {
         swarm: null,
         room: null,
         topicHex: null,
-        nick: 'Anonymous'
+        nick: 'Anonymous',
+        // Track connections that are being used for file transfer
+        // so chat listeners can skip them
+        transferConns: new Set()
     }
 
     process.stdin.on('data', async (data) => {
@@ -28,19 +36,20 @@ export async function startShell() {
             switch (cmd) {
                 case '/quit':
                 case '/exit':
+                    console.log(dimText('  👋 Goodbye!'))
                     if (state.swarm) await state.swarm.destroy()
                     process.exit(0)
                     break
 
                 case '/nick':
                     state.nick = args.join(' ') || 'Anonymous'
-                    console.log(`Nickname set to: ${state.nick}`)
+                    console.log(`  ${label.info} Nickname set to: ${colorNick(state.nick)}`)
                     break
 
                 case '/host':
                 case '/join':
                     if (args.length < 1) {
-                        console.log('Usage: /host <room_name>')
+                        console.log(`  ${label.error} Usage: ${styledCommand('/host <room_name>')}`)
                         break
                     }
                     const roomName = args.join(' ')
@@ -49,7 +58,7 @@ export async function startShell() {
 
                 case '/chat':
                     if (!state.swarm) {
-                        console.log('Error: You must join a room first using /host')
+                        console.log(`  ${label.error} You must join a room first using ${styledCommand('/host')}`)
                         break
                     }
                     await broadcastChat(state, args.join(' '))
@@ -57,29 +66,29 @@ export async function startShell() {
 
                 case '/send':
                     if (args.length < 1) {
-                        console.log('Usage: /send <file_path>')
+                        console.log(`  ${label.error} Usage: ${styledCommand('/send <file_path>')}`)
                         break
                     }
-                    await handleSend(state, args[0])
+                    await handleSend(state, args.join(' '))
                     break
 
                 case '/receive':
                     if (args.length < 1) {
-                        console.log('Usage: /receive <output_dir>')
+                        console.log(`  ${label.error} Usage: ${styledCommand('/receive <output_dir>')}`)
                         break
                     }
-                    await handleReceive(state, args[0])
+                    await handleReceive(state, args.join(' '))
                     break
 
                 default:
-                    console.log(`Unknown command: ${cmd}`)
+                    console.log(`  ${label.error} Unknown command: ${chalk.yellow(cmd)}`)
             }
         } else {
             // Default to chat if in a room
             if (state.swarm) {
                 await broadcastChat(state, line)
             } else {
-                console.log('Not connected. Use /host <room> to join a room.')
+                console.log(`  ${label.info} Not connected. Use ${styledCommand('/host <room>')} to join a room.`)
             }
         }
     })
@@ -87,41 +96,51 @@ export async function startShell() {
 
 async function handleHost(state, roomName) {
     if (state.swarm) {
-        console.log('Leaving current room...')
+        console.log(`  ${label.system} ${dimText('Leaving current room...')}`)
         await state.swarm.destroy()
     }
 
     state.room = roomName
+    state.transferConns = new Set() // reset on new room
     const topic = hashRoomKey(roomName)
     state.topicHex = topic.toString('hex')
 
-    console.log(`Hashing room '${roomName}'...`)
-    console.log(`Room Key (Topic): ${state.topicHex}`)
-    console.log('Joining swarm...')
+    console.log(`  ${label.info} Hashing room ${styledRoom(roomName)}...`)
+    console.log(`  ${label.info} Topic: ${styledTopic(state.topicHex)}`)
+    console.log(`  ${label.system} ${infoText('Joining swarm...')}`)
 
     state.swarm = createSwarm()
     setupSwarmListeners(state)
     await joinSwarm(state.swarm, topic)
-    console.log(`Joined room: ${roomName}`)
+    console.log(`  ${label.success} ${successText(`Joined room:`)} ${styledRoom(roomName)}`)
+    console.log(divider())
 }
 
 function setupSwarmListeners(state) {
     state.swarm.on('connection', (conn, info) => {
         const peerId = info.publicKey.toString('hex').slice(0, 8)
-        console.log(`\n[System] Peer ${peerId} connected.`)
+        console.log(`\n  ${label.system} Peer ${chalk.hex('#8b5cf6').bold(peerId)} ${successText('connected')} ⚡`)
 
         conn.on('data', (data) => {
+            // Skip chat processing for connections in transfer mode
+            if (state.transferConns.has(conn)) return
+
             try {
                 const msg = JSON.parse(data.toString())
                 if (msg.type === 'CHAT') {
-                    const time = new Date(msg.timestamp).toLocaleTimeString()
-                    console.log(`[${time}] <${msg.nick}> ${msg.text}`)
+                    const time = styledTime(msg.timestamp)
+                    console.log(`  ${dimText('│')} ${time} ${colorNick(msg.nick)}${dimText(':')} ${msg.text}`)
                 }
             } catch (err) { }
         })
 
         conn.on('error', () => {
-            console.log(`\n[System] Peer ${peerId} disconnected.`)
+            state.transferConns.delete(conn)
+            console.log(`\n  ${label.system} Peer ${chalk.hex('#8b5cf6').bold(peerId)} ${errorText('disconnected')}`)
+        })
+
+        conn.on('close', () => {
+            state.transferConns.delete(conn)
         })
     })
 }
@@ -137,73 +156,68 @@ async function broadcastChat(state, text) {
     const payload = JSON.stringify(msg)
 
     // Local echo
-    const time = new Date(msg.timestamp).toLocaleTimeString()
-    console.log(`[${time}] <${state.nick}> ${text}`)
+    const time = styledTime(msg.timestamp)
+    console.log(`  ${dimText('│')} ${time} ${colorNick(state.nick)}${dimText(':')} ${text}`)
 
     for (const conn of state.swarm.connections) {
+        // Don't send chat on connections used for transfer
+        if (state.transferConns.has(conn)) continue
         conn.write(payload)
     }
 }
 
 async function handleSend(state, filePath) {
     if (!state.swarm) {
-        console.log('Error: Join a room first.')
+        console.log(`  ${label.error} Join a room first.`)
         return
     }
 
     const absPath = path.resolve(process.cwd(), filePath)
     if (!fs.existsSync(absPath)) {
-        console.log(`Error: File ${absPath} not found.`)
+        console.log(`  ${label.error} File ${styledPath(absPath)} not found.`)
         return
     }
 
-    console.log(`[Sender] Initiating transfer for: ${filePath}`)
-    console.log(`[Sender] Waiting for ready peer...`)
+    console.log(`  ${label.sender} Initiating transfer for: ${styledPath(filePath)}`)
+    console.log(`  ${label.sender} ${dimText('Waiting for ready peer...')}`)
 
-    const sender = new ResumableSender(absPath)
-
-    // We reuse the existing swarm connections
-    // But ResumableSender.connect() expects a SINGLE socket (conn).
-    // In a multi-peer swarm, sending to ALL might be chaotic or intended.
-    // For now, let's send to ALL connected peers who handshake.
-
-    // NOTE: This blocks the CLI loop slightly during setup, but the streams are async.
-    // We need to hook up the 'connection' event OR iterate existing connections.
-
-    // Iterating existing connections:
+    // For each existing connection, create a dedicated sender
     for (const conn of state.swarm.connections) {
-        setupSenderOnConnection(sender, conn)
+        startSendOnConnection(state, absPath, conn)
     }
 
-    // Hook for future connections (until some stop condition?)
-    // For this simple shell, we'll keep sending to anyone new who joins while we stay in "shell mode".
-    // But typically user wants "/send" to happen once. 
-    // Let's attach a temporary listener.
-
-    const onConn = (conn) => setupSenderOnConnection(sender, conn)
+    // Hook for future connections
+    const onConn = (conn) => startSendOnConnection(state, absPath, conn)
     state.swarm.on('connection', onConn)
 
-    console.log('[Sender] Transfer mode active. Press Ctrl+C or type command to stop (not implemented deeply).')
+    console.log(`  ${label.sender} ${infoText('Transfer mode active.')} 📤`)
 }
 
-function setupSenderOnConnection(sender, conn) {
+function startSendOnConnection(state, absPath, conn) {
+    // Mark this connection as being used for transfer
+    state.transferConns.add(conn)
+
+    // Create a NEW sender per connection to avoid listener stacking
+    const sender = new ResumableSender(absPath)
+
     sender.connect(conn).catch(err => {
-        // console.log('Handshake failed or not a receiver:', err.message)
+        console.log(`  ${label.sender} ${errorText('Handshake failed:')} ${err.message}`)
+        state.transferConns.delete(conn)
     })
 
-    // Progress bar shared? It's tricky with multiple peers. 
-    // We will use simple logs for the shell version to avoid messing up chat UI.
-    sender.on('progress', (bytes) => {
-        // process.stdout.write('.') // minimal feedback
-    })
     sender.on('finished', () => {
-        console.log('\n[Sender] Transfer finished for a peer.')
+        console.log(`\n  ${label.sender} ${successText('Transfer finished for a peer.')} ✅`)
+        state.transferConns.delete(conn)
+    })
+
+    sender.on('error', (err) => {
+        state.transferConns.delete(conn)
     })
 }
 
 async function handleReceive(state, outputDir) {
     if (!state.swarm) {
-        console.log('Error: Join a room first.')
+        console.log(`  ${label.error} Join a room first.`)
         return
     }
     const absPath = path.resolve(process.cwd(), outputDir)
@@ -211,23 +225,37 @@ async function handleReceive(state, outputDir) {
         fs.mkdirSync(absPath, { recursive: true })
     }
 
-    console.log(`[Receiver] Ready to receive into: ${outputDir}`)
+    console.log(`  ${label.receiver} Ready to receive into: ${styledPath(outputDir)} 📥`)
 
-    const receiver = new ResumableReceiver(absPath)
-
+    // For each existing connection, create a dedicated receiver
     for (const conn of state.swarm.connections) {
-        setupReceiverOnConnection(receiver, conn)
+        startReceiveOnConnection(state, absPath, conn)
     }
 
-    const onConn = (conn) => setupReceiverOnConnection(receiver, conn)
+    // Hook for future connections
+    const onConn = (conn) => startReceiveOnConnection(state, absPath, conn)
     state.swarm.on('connection', onConn)
 }
 
-function setupReceiverOnConnection(receiver, conn) {
+function startReceiveOnConnection(state, absPath, conn) {
+    // Mark this connection as being used for transfer
+    state.transferConns.add(conn)
+
+    // Create a NEW receiver per connection to avoid listener stacking
+    const receiver = new ResumableReceiver(absPath)
+
     receiver.connect(conn).catch(err => {
-        // console.log('Handshake failed or not a sender')
+        console.log(`  ${label.receiver} ${errorText('Handshake failed:')} ${err.message}`)
+        state.transferConns.delete(conn)
     })
+
     receiver.on('finished', () => {
-        console.log('\n[Receiver] Transfer finished.')
+        console.log(`\n  ${label.receiver} ${successText('Transfer finished.')} ✅`)
+        state.transferConns.delete(conn)
+    })
+
+    receiver.on('error', (err) => {
+        console.log(`\n  ${label.receiver} ${errorText('Error:')} ${err.message}`)
+        state.transferConns.delete(conn)
     })
 }

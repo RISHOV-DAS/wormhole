@@ -1,24 +1,29 @@
 import { createSwarm, joinSwarm } from './networking.js'
 import { hashRoomKey } from './crypto.js'
+import {
+    label, colorNick, styledTime, styledRoom,
+    successText, errorText, dimText, divider, chalk
+} from './ui.js'
 
 export async function startChat(room, nick) {
     const topic = hashRoomKey(room)
-    console.log(`[Chat] Joining room: ${room} as '${nick}'`)
-    console.log(`[Chat] Type a message and press ENTER to send.`)
+    console.log(`  ${label.chat} Joining room: ${styledRoom(room)} as ${colorNick(nick)}`)
+    console.log(`  ${label.chat} ${dimText('Type a message and press ENTER to send.')}`)
+    console.log(divider())
 
     const swarm = createSwarm()
 
     // Handle incoming connections
     swarm.on('connection', (conn, info) => {
         const peerId = info.publicKey.toString('hex').slice(0, 8)
-        console.log(`[System] Peer ${peerId} joined.`)
+        console.log(`  ${label.system} Peer ${chalk.hex('#8b5cf6').bold(peerId)} ${successText('joined')} ⚡`)
 
         conn.on('data', (data) => {
             try {
                 const msg = JSON.parse(data.toString())
                 if (msg.type === 'CHAT') {
-                    const time = new Date(msg.timestamp).toLocaleTimeString()
-                    console.log(`[${time}] <${msg.nick}> ${msg.text}`)
+                    const time = styledTime(msg.timestamp)
+                    console.log(`  ${dimText('│')} ${time} ${colorNick(msg.nick)}${dimText(':')} ${msg.text}`)
                 }
             } catch (err) {
                 // Ignore non-chat data (e.g. handshake artifacts if mixed use)
@@ -26,7 +31,7 @@ export async function startChat(room, nick) {
         })
 
         conn.on('error', () => {
-            console.log(`[System] Peer ${peerId} left.`)
+            console.log(`  ${label.system} Peer ${chalk.hex('#8b5cf6').bold(peerId)} ${errorText('left')}.`)
         })
     })
 
@@ -46,8 +51,8 @@ export async function startChat(room, nick) {
         const payload = JSON.stringify(msg)
 
         // Echo locally
-        const time = new Date(msg.timestamp).toLocaleTimeString()
-        console.log(`[${time}] <${nick}> ${text}`)
+        const time = styledTime(msg.timestamp)
+        console.log(`  ${dimText('│')} ${time} ${colorNick(nick)}${dimText(':')} ${text}`)
 
         for (const conn of swarm.connections) {
             conn.write(payload)
