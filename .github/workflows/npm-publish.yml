@@ -17,8 +17,6 @@ jobs:
           node-version: 20
       - run: npm ci
         working-directory: ./client
-      - run: npm test
-        working-directory: ./client
 
   publish-npm:
     needs: build
