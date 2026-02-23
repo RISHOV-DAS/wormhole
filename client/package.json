@@ -1,11 +1,11 @@
 {
-    "name": "wormhole-cli",
+    "name": "@rishov28/wormhole",
     "version": "2.0.0",
     "description": "P2P CLI for anonymous chat and folder transfer",
     "main": "wormhole.js",
     "type": "module",
     "bin": {
-        "wormhole": "./bin/wormhole.js"
+        "wormhole": "bin/wormhole.js"
     },
     "scripts": {
         "test": "echo \"Error: no test specified\" && exit 1"
