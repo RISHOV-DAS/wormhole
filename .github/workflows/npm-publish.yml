@@ -16,7 +16,9 @@ jobs:
         with:
           node-version: 20
       - run: npm ci
+        working-directory: ./client
       - run: npm test
+        working-directory: ./client
 
   publish-npm:
     needs: build
@@ -28,6 +30,8 @@ jobs:
           node-version: 20
           registry-url: https://registry.npmjs.org/
       - run: npm ci
+        working-directory: ./client
       - run: npm publish
+        working-directory: ./client
         env:
           NODE_AUTH_TOKEN: ${{secrets.NPM_TOKEN}}
