@@ -1,7 +1,6 @@
 import fs from 'fs'
 import path from 'path'
 import tar from 'tar-fs'
-import pump from 'pump'
 import { EventEmitter } from 'events'
 import { label, successText, errorText, dimText, infoText } from './ui.js'
 

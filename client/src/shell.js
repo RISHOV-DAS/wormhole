@@ -112,7 +112,24 @@ async function handleHost(state, roomName) {
     state.swarm = createSwarm()
     setupSwarmListeners(state)
     await joinSwarm(state.swarm, topic)
+
+    const localKey = state.swarm.keyPair.publicKey.toString('hex').slice(0, 8)
+    const dht = state.swarm.dht
     console.log(`  ${label.success} ${successText(`Joined room:`)} ${styledRoom(roomName)}`)
+    console.log(`  ${label.info} Your peer ID: ${chalk.hex('#8b5cf6').bold(localKey)}`)
+
+    // Show NAT diagnostics
+    const host = dht.host || 'unknown'
+    const port = dht.port || 'unknown'
+    const firewalled = dht.firewalled
+    console.log(`  ${label.info} DHT node: ${dimText(`${host}:${port}`)}`)
+    if (firewalled) {
+        console.log(`  ${label.info} ${chalk.hex('#f97316').bold('⚠ NAT: Firewalled')} ${dimText('— peers may have trouble connecting')}`)
+    } else {
+        console.log(`  ${label.info} ${successText('NAT: Open')} ${dimText('— direct connections possible')}`)
+    }
+    console.log(`  ${label.info} ${dimText('DHT announced & flushed. Waiting for peers...')}`)
+    console.log(`  ${label.info} ${successText('LAN discovery active')} ${dimText('— peers on same network connect directly')}`)
     console.log(divider())
 }
 
@@ -181,37 +198,53 @@ async function handleSend(state, filePath) {
     console.log(`  ${label.sender} Initiating transfer for: ${styledPath(filePath)}`)
     console.log(`  ${label.sender} ${dimText('Waiting for ready peer...')}`)
 
-    // For each existing connection, create a dedicated sender
-    for (const conn of state.swarm.connections) {
-        startSendOnConnection(state, absPath, conn)
+    // Track active send connections so we can remove the listener when done
+    const activeSends = new Set()
+
+    const cleanup = () => {
+        state.swarm.removeListener('connection', onConn)
     }
 
-    // Hook for future connections
-    const onConn = (conn) => startSendOnConnection(state, absPath, conn)
+    const onConn = (conn) => startSendOnConnection(state, absPath, conn, activeSends, cleanup)
+
+    // For each existing connection, create a dedicated sender
+    for (const conn of state.swarm.connections) {
+        startSendOnConnection(state, absPath, conn, activeSends, cleanup)
+    }
+
+    // Hook for future connections (will be removed after transfers complete)
     state.swarm.on('connection', onConn)
 
     console.log(`  ${label.sender} ${infoText('Transfer mode active.')} 📤`)
 }
 
-function startSendOnConnection(state, absPath, conn) {
+function startSendOnConnection(state, absPath, conn, activeSends, cleanup) {
     // Mark this connection as being used for transfer
     state.transferConns.add(conn)
+    activeSends.add(conn)
 
     // Create a NEW sender per connection to avoid listener stacking
     const sender = new ResumableSender(absPath)
 
+    const done = () => {
+        state.transferConns.delete(conn)
+        activeSends.delete(conn)
+        // When all sends are done, stop listening for new connections
+        if (activeSends.size === 0) cleanup()
+    }
+
     sender.connect(conn).catch(err => {
         console.log(`  ${label.sender} ${errorText('Handshake failed:')} ${err.message}`)
-        state.transferConns.delete(conn)
+        done()
     })
 
     sender.on('finished', () => {
         console.log(`\n  ${label.sender} ${successText('Transfer finished for a peer.')} ✅`)
-        state.transferConns.delete(conn)
+        done()
     })
 
     sender.on('error', (err) => {
-        state.transferConns.delete(conn)
+        done()
     })
 }
 
@@ -227,35 +260,51 @@ async function handleReceive(state, outputDir) {
 
     console.log(`  ${label.receiver} Ready to receive into: ${styledPath(outputDir)} 📥`)
 
-    // For each existing connection, create a dedicated receiver
-    for (const conn of state.swarm.connections) {
-        startReceiveOnConnection(state, absPath, conn)
+    // Track active receive connections so we can remove the listener when done
+    const activeRecvs = new Set()
+
+    const cleanup = () => {
+        state.swarm.removeListener('connection', onConn)
     }
 
-    // Hook for future connections
-    const onConn = (conn) => startReceiveOnConnection(state, absPath, conn)
+    const onConn = (conn) => startReceiveOnConnection(state, absPath, conn, activeRecvs, cleanup)
+
+    // For each existing connection, create a dedicated receiver
+    for (const conn of state.swarm.connections) {
+        startReceiveOnConnection(state, absPath, conn, activeRecvs, cleanup)
+    }
+
+    // Hook for future connections (will be removed after transfers complete)
     state.swarm.on('connection', onConn)
 }
 
-function startReceiveOnConnection(state, absPath, conn) {
+function startReceiveOnConnection(state, absPath, conn, activeRecvs, cleanup) {
     // Mark this connection as being used for transfer
     state.transferConns.add(conn)
+    activeRecvs.add(conn)
 
     // Create a NEW receiver per connection to avoid listener stacking
     const receiver = new ResumableReceiver(absPath)
 
+    const done = () => {
+        state.transferConns.delete(conn)
+        activeRecvs.delete(conn)
+        // When all receives are done, stop listening for new connections
+        if (activeRecvs.size === 0) cleanup()
+    }
+
     receiver.connect(conn).catch(err => {
         console.log(`  ${label.receiver} ${errorText('Handshake failed:')} ${err.message}`)
-        state.transferConns.delete(conn)
+        done()
     })
 
     receiver.on('finished', () => {
         console.log(`\n  ${label.receiver} ${successText('Transfer finished.')} ✅`)
-        state.transferConns.delete(conn)
+        done()
     })
 
     receiver.on('error', (err) => {
         console.log(`\n  ${label.receiver} ${errorText('Error:')} ${err.message}`)
-        state.transferConns.delete(conn)
+        done()
     })
 }
