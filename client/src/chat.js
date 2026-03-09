@@ -26,7 +26,7 @@ export async function startChat(room, nick) {
                     console.log(`  ${dimText('│')} ${time} ${colorNick(msg.nick)}${dimText(':')} ${msg.text}`)
                 }
             } catch (err) {
-                // Ignore non-chat data (e.g. handshake artifacts if mixed use)
+                // Ignore non-chat data
             }
         })
 

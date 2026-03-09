@@ -37,14 +37,10 @@ export class ResumableSender extends EventEmitter {
         console.log(`  ${label.sender} ${infoText(`Resuming from ${startOffset} bytes`)}`)
 
         // 2. Create tar stream
-        // Note: tar-fs doesn't support 'start' offset natively on the pack stream easily 
-        // because it generates headers on the fly.
-        // We have to consume and discard bytes.
         let packer
         const stat = fs.statSync(this.folderPath)
 
-        // Fix for EISDIR error when sending single files:
-        // tar-fs.pack(file) behaves unexpectedly. We must pack the parent dir
+        // Pack the parent dir
         // and include only the file as an entry.
         if (stat.isFile()) {
             packer = tar.pack(path.dirname(this.folderPath), {
@@ -54,9 +50,7 @@ export class ResumableSender extends EventEmitter {
             packer = tar.pack(this.folderPath)
         }
 
-        // We need to track total size for progress if possible, but tar-fs doesn't know total size ahead of time easily
         // without a pre-pass. For now, we'll just stream and track transferred.
-
         let bytesSkipped = 0
 
         // 3. Pipe with logic to skip 'startOffset'

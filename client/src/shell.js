@@ -3,7 +3,6 @@ import path from 'path'
 import { createSwarm, joinSwarm } from './networking.js'
 import { hashRoomKey } from './crypto.js'
 import { ResumableSender, ResumableReceiver } from './transfer.js'
-import cliProgress from 'cli-progress'
 import {
     banner, showHelp, label, colorNick, styledTime, styledRoom,
     styledTopic, styledPath, styledCommand, errorText, successText,
@@ -19,8 +18,6 @@ export async function startShell() {
         room: null,
         topicHex: null,
         nick: 'Anonymous',
-        // Track connections that are being used for file transfer
-        // so chat listeners can skip them
         transferConns: new Set()
     }
 
@@ -84,7 +81,7 @@ export async function startShell() {
                     console.log(`  ${label.error} Unknown command: ${chalk.yellow(cmd)}`)
             }
         } else {
-            // Default to chat if in a room
+            // Default chat if in a room
             if (state.swarm) {
                 await broadcastChat(state, line)
             } else {
@@ -101,7 +98,7 @@ async function handleHost(state, roomName) {
     }
 
     state.room = roomName
-    state.transferConns = new Set() // reset on new room
+    state.transferConns = new Set()
     const topic = hashRoomKey(roomName)
     state.topicHex = topic.toString('hex')
 
@@ -118,7 +115,6 @@ async function handleHost(state, roomName) {
     console.log(`  ${label.success} ${successText(`Joined room:`)} ${styledRoom(roomName)}`)
     console.log(`  ${label.info} Your peer ID: ${chalk.hex('#8b5cf6').bold(localKey)}`)
 
-    // Show NAT diagnostics
     const host = dht.host || 'unknown'
     const port = dht.port || 'unknown'
     const firewalled = dht.firewalled
@@ -172,7 +168,7 @@ async function broadcastChat(state, text) {
     }
     const payload = JSON.stringify(msg)
 
-    // Local echo
+    // Local
     const time = styledTime(msg.timestamp)
     console.log(`  ${dimText('│')} ${time} ${colorNick(state.nick)}${dimText(':')} ${text}`)
 
@@ -219,17 +215,15 @@ async function handleSend(state, filePath) {
 }
 
 function startSendOnConnection(state, absPath, conn, activeSends, cleanup) {
-    // Mark this connection as being used for transfer
     state.transferConns.add(conn)
     activeSends.add(conn)
 
-    // Create a NEW sender per connection to avoid listener stacking
+    // NEW sender per connection to avoid listener stacking
     const sender = new ResumableSender(absPath)
 
     const done = () => {
         state.transferConns.delete(conn)
         activeSends.delete(conn)
-        // When all sends are done, stop listening for new connections
         if (activeSends.size === 0) cleanup()
     }
 
@@ -260,7 +254,7 @@ async function handleReceive(state, outputDir) {
 
     console.log(`  ${label.receiver} Ready to receive into: ${styledPath(outputDir)} 📥`)
 
-    // Track active receive connections so we can remove the listener when done
+    // Track active receive connections
     const activeRecvs = new Set()
 
     const cleanup = () => {
@@ -279,17 +273,15 @@ async function handleReceive(state, outputDir) {
 }
 
 function startReceiveOnConnection(state, absPath, conn, activeRecvs, cleanup) {
-    // Mark this connection as being used for transfer
     state.transferConns.add(conn)
     activeRecvs.add(conn)
 
-    // Create a NEW receiver per connection to avoid listener stacking
     const receiver = new ResumableReceiver(absPath)
 
+    // When all receives are done, stop listening for new connections
     const done = () => {
         state.transferConns.delete(conn)
         activeRecvs.delete(conn)
-        // When all receives are done, stop listening for new connections
         if (activeRecvs.size === 0) cleanup()
     }
 

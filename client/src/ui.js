@@ -117,7 +117,7 @@ export function banner() {
 export function showHelp() {
     console.log()
     console.log(chalk.hex(COLORS.purple).bold('  Commands:'))
-    console.log(`    ${styledCommand('/host <room>')}    ${dimText('—')} ${dimText('Create or join a room')}`)
+    console.log(`    ${styledCommand('/host or /join <room>')}    ${dimText('—')} ${dimText('Create or join a room')}`)
     console.log(`    ${styledCommand('/nick <name>')}    ${dimText('—')} ${dimText('Set your nickname')}`)
     console.log(`    ${styledCommand('/chat <msg>')}     ${dimText('—')} ${dimText('Send a message (or just type)')}`)
     console.log(`    ${styledCommand('/send <file>')}    ${dimText('—')} ${dimText('Send a file to peers')}`)

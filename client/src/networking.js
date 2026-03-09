@@ -1,5 +1,4 @@
 import Hyperswarm from 'hyperswarm'
-import crypto from 'crypto'
 import { LANDiscovery } from './lan.js'
 import { label, dimText, infoText, errorText, warnText, successText, chalk } from './ui.js'
 
@@ -65,10 +64,9 @@ export function createSwarm() {
 }
 
 export async function joinSwarm(swarm, topicBuffer) {
-    // Join on both Hyperswarm (DHT) and LAN discovery
+    // Joins on both Hyperswarm and LAN discovery
     const discovery = swarm.join(topicBuffer, { server: true, client: true })
 
-    // Also join on LAN
     if (swarm._lan) {
         swarm._lan.join(topicBuffer)
     }
@@ -77,7 +75,6 @@ export async function joinSwarm(swarm, topicBuffer) {
     await discovery.flushed()
     debug('Topic announced! Now flushing swarm to connect to discovered peers...')
 
-    // Flush ensures we connect to any peers that were already discovered
     await swarm.flush()
     debug(`Swarm flushed. Active connections: ${swarm.connections.size}`)
 

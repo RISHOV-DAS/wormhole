@@ -27,7 +27,8 @@ export function run() {
         .argument('<folder>', 'Folder path to send')
         .requiredOption('-r, --room <secret>', 'Secret room key')
         .action(async (folderPath, options) => {
-            const absPath = path.resolve(process.cwd(), folderPath)
+            const cleanPath = stripQuotes(folderPath)
+            const absPath = path.resolve(process.cwd(), cleanPath)
             if (!fs.existsSync(absPath)) {
                 console.error(`  ${label.error} Folder ${styledPath(absPath)} does not exist.`)
                 process.exit(1)
@@ -85,7 +86,8 @@ export function run() {
         .argument('<output>', 'Output folder path')
         .requiredOption('-r, --room <secret>', 'Secret room key')
         .action(async (outputDir, options) => {
-            const absPath = path.resolve(process.cwd(), outputDir)
+            const cleanPath = stripQuotes(outputDir)
+            const absPath = path.resolve(process.cwd(), cleanPath)
             if (!fs.existsSync(absPath)) {
                 fs.mkdirSync(absPath, { recursive: true })
             }

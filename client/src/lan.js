@@ -2,18 +2,15 @@ import dgram from 'dgram'
 import net from 'net'
 import crypto from 'crypto'
 import { EventEmitter } from 'events'
-import { Duplex } from 'stream'
 
 const LAN_DISCOVERY_PORT = 43210
 const BROADCAST_INTERVAL = 2000
 const MAGIC = 'WORMHOLE_LAN_V1'
 
-/**
+/*
  * LAN Peer Discovery
- * 
  * Discovers peers on the same local network via UDP broadcast,
  * then creates direct TCP connections to bypass NAT/DHT issues.
- * 
  * This runs alongside Hyperswarm — whichever finds a peer first wins.
  */
 export class LANDiscovery extends EventEmitter {
@@ -59,10 +56,9 @@ export class LANDiscovery extends EventEmitter {
                             publicKey: Buffer.from(msg.id, 'hex')
                         })
                     }
-                } catch (e) { /* not our protocol, ignore */ }
+                } catch (e) { /*ignore */ }
             }
             socket.on('data', onData)
-            // Timeout if no identification within 5s
             setTimeout(() => {
                 if (!identified) {
                     socket.removeListener('data', onData)
@@ -88,7 +84,6 @@ export class LANDiscovery extends EventEmitter {
         })
 
         this.udpSocket.on('error', (err) => {
-            // UDP errors are non-fatal, just log
             // Common: EADDRINUSE if another wormhole instance is on the same machine
         })
 
@@ -96,7 +91,7 @@ export class LANDiscovery extends EventEmitter {
             this.udpSocket.bind(LAN_DISCOVERY_PORT, '0.0.0.0', () => {
                 try {
                     this.udpSocket.setBroadcast(true)
-                } catch (e) { /* setBroadcast may fail on some systems */ }
+                } catch (e) { /* May fail on some systems */ }
                 resolve()
             })
         })
@@ -136,23 +131,22 @@ export class LANDiscovery extends EventEmitter {
             if (data.magic !== MAGIC || data.type !== 'ANNOUNCE') return
             if (data.id === this.id) return  // ignore self
 
-            // Only care about topics we've joined
+            // Cares about topics joined
             if (!this.topics.has(data.topic)) return
 
             const peerKey = `${data.id}:${data.topic}`
             if (this.connectedPeers.has(peerKey)) return
 
-            // Dedup: only the peer with the "higher" ID initiates the TCP connection
-            // This prevents both peers from connecting to each other simultaneously
+            // Dedup: only the peer with the "higher" ID initiates the TCP connection This prevents both peers from connecting to each other simultaneously
+
             if (this.id < data.id) return
 
             this.connectedPeers.add(peerKey)
 
-            // Connect to the peer's TCP server
+            // Connects to the peer's TCP server
             const socket = net.connect(data.tcpPort, rinfo.address)
 
             socket.on('connect', () => {
-                // Send identification
                 socket.write(JSON.stringify({
                     magic: MAGIC,
                     type: 'IDENTIFY',
